@@ -34,41 +34,29 @@ export default {
    * @returns {Promise<Response>}
    */
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
+    const { pathname, origin } = new URL(request.url);
 
-    // Handle preflight (OPTIONS) requests for CORS.
-    if (request.method === 'OPTIONS') {
-      return handleOptions(request);
-    }
-
-    // Serve the landing page for the root path.
-    if (url.pathname === '/' || url.pathname === '') {
-      return generateLandingPage(url);
-    }
+    if (request.method === 'OPTIONS') return handleOptions(request);
+    if (pathname === '/' || pathname === '') return generateLandingPage({ origin });
 
     try {
-      // 1. Get the authentication token using a secure priority order.
       const token = await getToken(request, env);
+      const owner = env.GITHUB_OWNER;
+      if (!owner) return new Response('GITHUB_OWNER environment variable not set.', { status: 500 });
 
-      // 2. Construct the target GitHub URL.
-      const githubUrl = `https://${config.githubDomain}${url.pathname}`;
+      const parts = pathname.replace(/^\/+/, '').split('/');
+      if (parts.length < 3) return new Response('Invalid path. Format: /repo/branch/path-to-file', { status: 400 });
 
-      // 3. Fetch the file from GitHub, injecting the token if available.
-      const githubResponse = await fetch(githubUrl, {
-        headers: token ? { 'Authorization': `token ${token}` } : {},
-      });
+      const [repo, branch, ...fileParts] = parts;
+      const githubUrl = `https://${config.githubDomain}/${owner}/${repo}/${branch}/${fileParts.join('/')}`;
 
-      // 4. Handle non-OK responses from GitHub with user-friendly messages.
-      if (!githubResponse.ok) {
-        return handleGitHubError(githubResponse);
-      }
-      
-      // 5. Build the final response with appropriate caching and security headers.
+      const headers = token ? { 'Authorization': `token ${token}` } : {};
+      const githubResponse = await fetch(githubUrl, { headers });
+      if (!githubResponse.ok) return handleGitHubError(githubResponse);
+
       const response = new Response(githubResponse.body, githubResponse);
       applyHeaders(response.headers, env);
-      
       return response;
-
     } catch (err) {
       console.error('Proxy request error:', err);
       return new Response(`Proxy request failed: ${err.message}`, { status: 500 });
@@ -188,16 +176,19 @@ function generateLandingPage(url) {
       <body>
         <h1>🚀 Universal GitHub CDN</h1>
         <p>This is a high-performance CDN proxy for GitHub raw content, supporting both public and private repositories.</p>
-        <p><strong>Usage Format:</strong></p>
-        <code>${url.origin}/&lt;owner&gt;/&lt;repo&gt;/&lt;branch&gt;/&lt;path-to-file&gt;</code>
-        
+        <p><strong>使用格式：</strong></p>
+        <code>${url.origin}/&lt;repo&gt;/&lt;branch&gt;/&lt;path-to-file&gt;</code>
         <div class="note">
-          <h3>Accessing Private Repositories</h3>
-          <p>To access private repositories, you must provide a GitHub Token in one of the following ways (in order of recommendation):</p>
+          <h3>仓库 owner 已隐藏</h3>
+          <p>owner（仓库拥有者）由 Worker 环境变量 <code>GITHUB_OWNER</code> 决定，用户无需在链接中填写 owner。</p>
+        </div>
+        <div class="note">
+          <h3>访问私有仓库</h3>
+          <p>如需访问私有仓库，必须通过以下方式之一提供 GitHub Token（推荐顺序）：</p>
           <ol>
-            <li><strong>HTTP Header (Recommended):</strong> Add an <code>X-GitHub-Token</code> header to your request.</li>
-            <li><strong>Worker Environment Variable:</strong> Set a <code>GITHUB_TOKEN</code> secret in the Worker's settings.</li>
-            <li><strong>URL Parameter (Use with caution):</strong> Append <code>?token=YOUR_TOKEN</code>. This requires setting the <code>ALLOW_QUERY_PARAM_TOKEN</code> environment variable to <code>"true"</code> in the Worker's settings.</li>
+            <li><strong>HTTP Header（推荐）:</strong> 在请求中添加 <code>X-GitHub-Token</code> 头。</li>
+            <li><strong>Worker 环境变量:</strong> 在 Worker 设置中配置 <code>GITHUB_TOKEN</code>。</li>
+            <li><strong>URL 参数（谨慎使用）:</strong> 在链接后添加 <code>?token=YOUR_TOKEN</code>，需在 Worker 设置中将 <code>ALLOW_QUERY_PARAM_TOKEN</code> 设为 <code>"true"</code>。</li>
           </ol>
         </div>
       </body>
